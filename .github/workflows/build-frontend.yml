@@ -52,20 +52,11 @@ jobs:
       group: gitops-update
       cancel-in-progress: false
     steps:
-      # Short-lived (1 hour) token from the GitHub App, valid only for the gitops repo
-      - name: Get GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.GITOPS_APP_ID }}
-          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
-          repositories: ${{ vars.GITOPS_REPO_NAME }}
-
       - name: Check out gitops repo
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/${{ vars.GITOPS_REPO_NAME }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.GITOPS_TOKEN }}   # fine-grained PAT: Contents read/write on the gitops repo
           ref: main
 
       # yq is preinstalled on GitHub's ubuntu runners
@@ -74,23 +65,19 @@ jobs:
           IMAGE: ${{ needs.build-push.outputs.image }}
           TAG: ${{ needs.build-push.outputs.tag }}
         run: |
-          yq -i '.frontend.image.repository = strenv(IMAGE) | .frontend.image.tag = strenv(TAG)' charts/two-tier/values.yaml
+          yq -i '.backend.image.repository = strenv(IMAGE) | .backend.image.tag = strenv(TAG)' charts/two-tier/values.yaml
           git diff
 
-      - name: Commit and push as the app's bot user
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+      - name: Commit and push
         run: |
-          BOT_ID=$(gh api "/users/${APP_SLUG}[bot]" --jq .id)
-          git config user.name  "${APP_SLUG}[bot]"
-          git config user.email "${BOT_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add charts/two-tier/values.yaml
           if git diff --cached --quiet; then
             echo "Tag already set, nothing to commit."
             exit 0
           fi
-          git commit -m "frontend: deploy ${{ needs.build-push.outputs.tag }}" \
+          git commit -m "backend: deploy ${{ needs.build-push.outputs.tag }}" \
                      -m "From ${{ github.repository }}@${{ github.sha }}"
           for i in 1 2 3; do
             git push origin main && exit 0
@@ -100,5 +87,5 @@ jobs:
 
       - name: Summary
         run: |
-          echo "### frontend ${{ needs.build-push.outputs.tag }} committed to ${{ vars.GITOPS_REPO_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### backend ${{ needs.build-push.outputs.tag }} committed to ${{ vars.GITOPS_REPO_NAME }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Argo CD will sync it within ~3 minutes." >> "$GITHUB_STEP_SUMMARY"
