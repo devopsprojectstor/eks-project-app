@@ -1,12 +1,6 @@
 name: Deploy backend
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "backend/**"
-      - "k8s/backend.yaml"
-      - ".github/workflows/deploy-backend.yml"
   workflow_dispatch:
 
 permissions:

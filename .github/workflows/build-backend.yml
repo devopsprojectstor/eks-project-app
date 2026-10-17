@@ -1,0 +1,115 @@
+name: Build backend
+
+# CI only. Builds and pushes the image, then bumps the tag in the gitops repo.
+# Argo CD sees that commit and deploys it. This workflow never touches the cluster.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/build-backend.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r backend/requirements-dev.txt
+      - run: pytest -q backend/tests
+
+  build-push:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+      tag: ${{ steps.push.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: push
+        run: |
+          TAG="${GITHUB_SHA::7}"
+          IMAGE="${{ steps.ecr.outputs.registry }}/${{ vars.ECR_BACKEND }}"
+          docker build --build-arg APP_VERSION="$TAG" -t "$IMAGE:$TAG" ./backend
+          docker push "$IMAGE:$TAG"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  update-gitops:
+    needs: build-push
+    runs-on: ubuntu-latest
+    # Same group in both build workflows, so two bumps never push at once
+    concurrency:
+      group: gitops-update
+      cancel-in-progress: false
+    steps:
+      # Short-lived (1 hour) token from the GitHub App, valid only for the gitops repo
+      - name: Get GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.GITOPS_APP_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          repositories: ${{ vars.GITOPS_REPO_NAME }}
+
+      - name: Check out gitops repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/${{ vars.GITOPS_REPO_NAME }}
+          token: ${{ steps.app-token.outputs.token }}
+          ref: main
+
+      # yq is preinstalled on GitHub's ubuntu runners
+      - name: Bump image in Helm values
+        env:
+          IMAGE: ${{ needs.build-push.outputs.image }}
+          TAG: ${{ needs.build-push.outputs.tag }}
+        run: |
+          yq -i '.backend.image.repository = strenv(IMAGE) | .backend.image.tag = strenv(TAG)' charts/two-tier/values.yaml
+          git diff
+
+      - name: Commit and push as the app's bot user
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          BOT_ID=$(gh api "/users/${APP_SLUG}[bot]" --jq .id)
+          git config user.name  "${APP_SLUG}[bot]"
+          git config user.email "${BOT_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
+          git add charts/two-tier/values.yaml
+          if git diff --cached --quiet; then
+            echo "Tag already set, nothing to commit."
+            exit 0
+          fi
+          git commit -m "backend: deploy ${{ needs.build-push.outputs.tag }}" \
+                     -m "From ${{ github.repository }}@${{ github.sha }}"
+          for i in 1 2 3; do
+            git push origin main && exit 0
+            git pull --rebase origin main
+          done
+          exit 1
+
+      - name: Summary
+        run: |
+          echo "### backend ${{ needs.build-push.outputs.tag }} committed to ${{ vars.GITOPS_REPO_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Argo CD will sync it within ~3 minutes." >> "$GITHUB_STEP_SUMMARY"

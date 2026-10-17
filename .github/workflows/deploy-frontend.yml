@@ -1,12 +1,6 @@
 name: Deploy frontend
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "frontend/**"
-      - "k8s/frontend.yaml"
-      - ".github/workflows/deploy-frontend.yml"
   workflow_dispatch:
 
 permissions:
