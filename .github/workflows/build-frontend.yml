@@ -65,7 +65,7 @@ jobs:
           IMAGE: ${{ needs.build-push.outputs.image }}
           TAG: ${{ needs.build-push.outputs.tag }}
         run: |
-          yq -i '.backend.image.repository = strenv(IMAGE) | .backend.image.tag = strenv(TAG)' charts/two-tier/values.yaml
+          yq -i '.frontend.image.repository = strenv(IMAGE) | .frontend.image.tag = strenv(TAG)' charts/two-tier/values.yaml
           git diff
 
       - name: Commit and push
@@ -77,7 +77,7 @@ jobs:
             echo "Tag already set, nothing to commit."
             exit 0
           fi
-          git commit -m "backend: deploy ${{ needs.build-push.outputs.tag }}" \
+          git commit -m "frontend: deploy ${{ needs.build-push.outputs.tag }}" \
                      -m "From ${{ github.repository }}@${{ github.sha }}"
           for i in 1 2 3; do
             git push origin main && exit 0
@@ -87,5 +87,5 @@ jobs:
 
       - name: Summary
         run: |
-          echo "### backend ${{ needs.build-push.outputs.tag }} committed to ${{ vars.GITOPS_REPO_NAME }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### frontend ${{ needs.build-push.outputs.tag }} committed to ${{ vars.GITOPS_REPO_NAME }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Argo CD will sync it within ~3 minutes." >> "$GITHUB_STEP_SUMMARY"
