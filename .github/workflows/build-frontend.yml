@@ -63,7 +63,7 @@ jobs:
 
       # 2. SBOM: list every package in the image (CycloneDX format).
       - name: Generate SBOM from the local image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.build.outputs.image }}:${{ steps.build.outputs.tag }}
           format: cyclonedx
@@ -71,7 +71,7 @@ jobs:
 
       # 3. Scan the SBOM. A fixable CRITICAL fails the job here, BEFORE the push.
       - name: Scan SBOM, fail on fixable criticals
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: sbom
           scan-ref: sbom.cdx.json
@@ -82,7 +82,7 @@ jobs:
       # Readable report in the job summary (never fails the job).
       - name: Vulnerability report (HIGH and CRITICAL)
         if: always()
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: sbom
           scan-ref: sbom.cdx.json
