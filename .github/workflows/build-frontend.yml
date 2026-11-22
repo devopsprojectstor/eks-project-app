@@ -1,7 +1,14 @@
 name: Build frontend
 
-# CI only. Builds and pushes the image, then bumps the tag in the gitops repo.
-# Argo CD sees that commit and deploys it. This workflow never touches the cluster.
+# CI only. Builds the image, generates and scans an SBOM, pushes only if the
+# scan passes, then bumps the tag in the gitops repo. Argo CD deploys it.
+#
+#   test ──────────────────────────────────────┐
+#                                              ├──▶ update-gitops
+#   build-push: build → SBOM → scan → push ────┘
+#
+# test and build-push run in parallel. update-gitops waits for both,
+# so an image is only deployed if its tests AND its scan passed.
 
 on:
   push:
@@ -12,15 +19,25 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write
+  id-token: write   # OIDC login to AWS (and keyless signing in Phase 2)
   contents: read
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check nginx config
+        run: |
+          docker run --rm -v "$PWD/frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro" \
+            --add-host backend:127.0.0.1 nginxinc/nginx-unprivileged:1.27-alpine nginx -t
+
   build-push:
     runs-on: ubuntu-latest
     outputs:
       image: ${{ steps.push.outputs.image }}
       tag: ${{ steps.push.outputs.tag }}
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -34,18 +51,83 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push image
-        id: push
+      # 1. Build. The image exists only on this runner for now.
+      - name: Build image
+        id: build
         run: |
           TAG="${GITHUB_SHA::7}"
           IMAGE="${{ steps.ecr.outputs.registry }}/${{ vars.ECR_FRONTEND }}"
           docker build -t "$IMAGE:$TAG" ./frontend
-          docker push "$IMAGE:$TAG"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      # 2. SBOM: list every package in the image (CycloneDX format).
+      - name: Generate SBOM from the local image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.build.outputs.image }}:${{ steps.build.outputs.tag }}
+          format: cyclonedx
+          output: sbom.cdx.json
+
+      # 3. Scan the SBOM. A fixable CRITICAL fails the job here, BEFORE the push.
+      - name: Scan SBOM, fail on fixable criticals
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: sbom
+          scan-ref: sbom.cdx.json
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # Readable report in the job summary (never fails the job).
+      - name: Vulnerability report (HIGH and CRITICAL)
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: sbom
+          scan-ref: sbom.cdx.json
+          severity: HIGH,CRITICAL
+          format: table
+          output: trivy-report.txt
+          exit-code: "0"
+
+      - name: Add report to job summary
+        if: always()
+        run: |
+          {
+            echo "### Trivy scan: frontend"
+            echo '```'
+            cat trivy-report.txt 2>/dev/null || echo "No report produced."
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Keep the SBOM even when the scan fails, to see which package caused it.
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-frontend
+          path: |
+            sbom.cdx.json
+            trivy-report.txt
+          if-no-files-found: ignore
+
+      # 4. Push. Only reached if the scan passed.
+      - name: Push image
+        id: push
+        run: |
+          IMAGE="${{ steps.build.outputs.image }}"
+          TAG="${{ steps.build.outputs.tag }}"
+          docker push "$IMAGE:$TAG"
+          # The registry digest only exists after the push. Phase 2 signs this.
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:$TAG" | cut -d@ -f2)
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Pushed $IMAGE:$TAG ($DIGEST)" >> "$GITHUB_STEP_SUMMARY"
+
   update-gitops:
-    needs: build-push
+    needs: [test, build-push]
     runs-on: ubuntu-latest
     # Same group in both build workflows, so two bumps never push at once
     concurrency:
@@ -59,7 +141,7 @@ jobs:
           token: ${{ secrets.GITOPS_TOKEN }}   # fine-grained PAT: Contents read/write on the gitops repo
           ref: main
 
-      # yq is preinstalled on GitHub's ubuntu runners
+      # Still deploys by tag. Phase 2 switches this to the digest.
       - name: Bump image in Helm values
         env:
           IMAGE: ${{ needs.build-push.outputs.image }}
@@ -78,6 +160,7 @@ jobs:
             exit 0
           fi
           git commit -m "frontend: deploy ${{ needs.build-push.outputs.tag }}" \
+                     -m "Digest: ${{ needs.build-push.outputs.digest }}" \
                      -m "From ${{ github.repository }}@${{ github.sha }}"
           for i in 1 2 3; do
             git push origin main && exit 0
