@@ -125,6 +125,35 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           echo "Pushed $IMAGE:$TAG ($DIGEST)" >> "$GITHUB_STEP_SUMMARY"
+             # 5. Sign with the private KMS key (never leaves AWS KMS; nothing goes to a public log)
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.3
+
+      - name: Sign image (by digest, AWS KMS)
+        env:
+          REF: ${{ steps.push.outputs.image }}@${{ steps.push.outputs.digest }}
+          KEY: awskms:///alias/two-tier-image-signing
+        run: cosign sign --yes --key "$KEY" --tlog-upload=false "$REF"
+
+      # 6. Attach the SBOM as a signed attestation
+      - name: Attest SBOM
+        env:
+          REF: ${{ steps.push.outputs.image }}@${{ steps.push.outputs.digest }}
+          KEY: awskms:///alias/two-tier-image-signing
+        run: |
+          cosign attest --yes --key "$KEY" --tlog-upload=false \
+            --type cyclonedx --predicate sbom.cdx.json "$REF"
+
+      # 7. Verify both before anything is deployed
+      - name: Verify signature and attestation
+        env:
+          REF: ${{ steps.push.outputs.image }}@${{ steps.push.outputs.digest }}
+          KEY: awskms:///alias/two-tier-image-signing
+        run: |
+          cosign verify --key "$KEY" --insecure-ignore-tlog=true "$REF" > /dev/null
+          cosign verify-attestation --key "$KEY" --insecure-ignore-tlog=true \
+            --type cyclonedx "$REF" > /dev/null
+          echo "### Signed: backend (AWS KMS, private) — \`$REF\`" >> "$GITHUB_STEP_SUMMARY"
 
   update-gitops:
     needs: [test, build-push]
@@ -146,8 +175,9 @@ jobs:
         env:
           IMAGE: ${{ needs.build-push.outputs.image }}
           TAG: ${{ needs.build-push.outputs.tag }}
+          DIGEST: ${{ needs.build-push.outputs.digest }}
         run: |
-          yq -i '.frontend.image.repository = strenv(IMAGE) | .frontend.image.tag = strenv(TAG)' charts/two-tier/values.yaml
+          yq -i '.backend.image.repository = strenv(IMAGE) | .backend.image.tag = strenv(TAG) | .backend.image.digest = strenv(DIGEST)' charts/two-tier/values.yaml
           git diff
 
       - name: Commit and push
