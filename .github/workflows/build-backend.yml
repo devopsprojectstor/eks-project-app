@@ -77,7 +77,7 @@ jobs:
           scan-type: sbom
           scan-ref: sbom.cdx.json
           severity: CRITICAL
-          ignore-unfixed: true
+          ignore-unfixed: false
           exit-code: "1"
 
       # Readable report in the job summary (never fails the job).
