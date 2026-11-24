@@ -150,7 +150,7 @@ jobs:
             --new-bundle-format=false \
             --type cyclonedx --predicate sbom.cdx.json "$REF"
 
-      
+    
   update-gitops:
     needs: [test, build-push]
     runs-on: ubuntu-latest
