@@ -55,7 +55,7 @@ jobs:
       - name: Build image
         id: build
         run: |
-          TAG="${GITHUB_SHA::7}"
+          TAG="${GITHUB_SHA::7}-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
           IMAGE="${{ steps.ecr.outputs.registry }}/${{ vars.ECR_FRONTEND }}"
           docker build -t "$IMAGE:$TAG" ./frontend
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
