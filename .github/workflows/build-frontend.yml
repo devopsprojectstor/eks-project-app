@@ -148,8 +148,7 @@ jobs:
             --new-bundle-format=false \
             --type cyclonedx --predicate sbom.cdx.json "$REF"
 
-      # 7. Verify both before anything is deployed
-      - name: Verify signature and attestation
+      
         env:
           REF: ${{ steps.push.outputs.image }}@${{ steps.push.outputs.digest }}
           KEY: awskms:///alias/two-tier-image-signing

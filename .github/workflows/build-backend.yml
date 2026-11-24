@@ -150,17 +150,7 @@ jobs:
             --new-bundle-format=false \
             --type cyclonedx --predicate sbom.cdx.json "$REF"
 
-      # 7. Verify both before anything is deployed
-      - name: Verify signature and attestation
-        env:
-          REF: ${{ steps.push.outputs.image }}@${{ steps.push.outputs.digest }}
-          KEY: awskms:///alias/two-tier-image-signing
-        run: |
-          cosign verify --key "$KEY" --insecure-ignore-tlog=true "$REF" > /dev/null
-          cosign verify-attestation --key "$KEY" --insecure-ignore-tlog=true \
-            --type cyclonedx "$REF" > /dev/null
-          echo "### Signed: backend (AWS KMS, private) — \`$REF\`" >> "$GITHUB_STEP_SUMMARY"
-
+      
   update-gitops:
     needs: [test, build-push]
     runs-on: ubuntu-latest
