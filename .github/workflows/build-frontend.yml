@@ -171,7 +171,7 @@ jobs:
           TAG: ${{ needs.build-push.outputs.tag }}
           DIGEST: ${{ needs.build-push.outputs.digest }}
         run: |
-          yq -i '.backend.image.repository = strenv(IMAGE) | .backend.image.tag = strenv(TAG) | .backend.image.digest = strenv(DIGEST)' charts/two-tier/values.yaml
+          yq -i '.frontend.image.repository = strenv(IMAGE) | .frontend.image.tag = strenv(TAG) | .frontend.image.digest = strenv(DIGEST)' charts/two-tier/values.yaml
           git diff
 
       - name: Commit and push
